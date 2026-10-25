@@ -88,10 +88,13 @@ experiments/nowinandroid/setup.sh    # clone, build, boot an emulator; ~25s once
 (`NIA_DIR` overrides), builds it with its own Gradle wrapper (nixpkgs'
 Gradle is too old for its AGP), builds this project, creates an AVD under
 `~/.local/share/bombadil-compose/avd` and boots it headless, or reuses
-emulators that are already running. Emulators outlive the driver, since
-booting one takes longer than Bombadil waits for a driver's `hello`.
-`EMULATORS=3 setup.sh` boots three, for parallel fuzzing, and
-`setup.sh stop` kills them.
+emulators that are already running. Emulators outlive the driver:
+a cold boot takes about 20 seconds, which every run would pay otherwise;
+each session clears the app's data instead.
+`EMULATORS=3 setup.sh` boots three, for parallel fuzzing
+(`--parallelism 3`), and `setup.sh stop` kills them. All instances run
+`-read-only` so they can share the AVD; an emulator of that AVD that you
+started without `-read-only` stops others from booting.
 
 ```sh
 B=bombadil   # a Bombadil build with `bombadil external`
