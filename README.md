@@ -158,7 +158,7 @@ B=bombadil   # a Bombadil build with `bombadil external`
 S=experiments/nowinandroid
 
 $B external test --specification $S/spec.ts --time-limit 3m -- $S/driver.sh
-$B external fuzz --specification $S/spec.ts --time-limit-fuzz 3m --time-limit-run 40s -- $S/driver.sh
+$B external fuzz --specification $S/spec.ts --time-limit-fuzz 3m --time-limit-run 30s -- $S/driver.sh
 ```
 
 `spec.ts` checks that the app stays in front (articles open in the
@@ -178,7 +178,10 @@ $B external test --specification $S/follow.spec.ts --exit-on-violation --output-
 $B external shrink --specification $S/follow.spec.ts --trace /tmp/follow -- $S/driver.sh
 ```
 
-Each action takes about 4 seconds, two `uiautomator dump`s of about 2
-seconds each, and a session takes about 7 seconds to start. Keep
-`--time-limit-run` well above that when fuzzing: the default of 10s
-allows only an action or two.
+A step (action to state) takes about 0.5 seconds (median; p90 0.9s),
+mostly the two 200ms quiet periods of settling. Fetching a tree takes
+about 30ms on the device, and moving it to the host takes about 1ms.
+A session takes about 3 seconds to start. That's from a 3-minute test:
+275 states, or 1.5 per second, against 0.22 per second with
+`uiautomator dump`. Bombadil's default `--time-limit-run` of 10s allows
+about a dozen actions per fuzz run, so raise it for longer runs.
