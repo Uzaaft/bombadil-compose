@@ -111,9 +111,10 @@ screen on Back. It taps visible clickable nodes, scrolls, types into the
 focused search field, and presses Back except where Back would close the
 app.
 
-`follow.spec.ts` claims no topic is ever followed, which the app
-violates as soon as a topic toggle is tapped. Use it to see a violation
-found and shrunk:
+`follow.spec.ts` claims no interest is ever followed on the Interests
+tab, which the app violates as soon as one is followed there (at least
+two actions: open Interests, tap a follow button). Use it to see a
+violation found and shrunk:
 
 ```sh
 $B external test --specification $S/follow.spec.ts --exit-on-violation --output-path /tmp/follow -- $S/driver.sh
