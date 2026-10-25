@@ -31,44 +31,101 @@ runs it as a Bombadil driver. Each session installs the APK (if given),
 clears the app's data, grants the permissions, disables animations and
 launches the app.
 
-The state is the focused window and the visible UI tree from
-`uiautomator dump`, with layout-only nodes pruned:
+### The on-device helper
+
+The driver reads the UI and acts through a small instrumentation APK,
+`android-helper/` (plain Java against `android.jar`, about 20 KB). The
+driver carries it as a resource, installs it on each device the first
+time, and starts it with `adb shell am instrument -w`. The helper keeps
+one `UiAutomation` connection open, sees every interactive window
+(including system dialogs such as crash and ANR dialogs), and answers
+line-delimited JSON requests on the abstract socket `bombadil-helper`,
+which the driver reaches through `adb forward`. It outlives sessions:
+later sessions reuse it as long as it runs the same APK. `AndroidHelper`
+documents its commands.
+
+Gradle builds the APK without the Android Gradle plugin: `compileHelper`
+compiles the Java, and `android-helper/build.sh` runs `d8`, `aapt2`,
+`zipalign` and `apksigner` from the dev shell's SDK. The signing key is
+generated per build directory, and the driver reinstalls the helper when
+a new key makes the update fail.
+
+While the helper runs, nothing else on the device can use UiAutomation
+(`uiautomator dump`, Espresso or other UI tests): Android allows one
+connection at a time.
+
+### State
+
+The state is the focused window and the pruned accessibility tree of
+every interactive window, top window first:
 
 ```json
-{"package": "...", "activity": "...", "focus": "<window title>",
+{"package": "<package of the active window>", "activity": "<last activity shown>",
+ "focus": "<active window's title>",
  "lastAction": <the action just applied, or null>,
- "nodes": [{"resourceId": "...", "class": "View", "text": "...", "desc": "...",
-            "label": "...", "clickable": true, "scrollable": false, "enabled": true,
-            "checkable": false, "checked": false, "selected": false, "focused": false,
-            "longClickable": false, "bounds": [left, top, right, bottom], "children": [...]}]}
+ "windows": [{"type": "application", "package": "...", "title": "...", "active": true,
+              "focused": true, "layer": 2, "bounds": [0, 0, 1080, 2400],
+              "nodes": [{"id": "5c1f3a0e", "resourceId": "...", "class": "View",
+                         "text": "...", "desc": "...", "label": "...",
+                         "clickable": true, "longClickable": false, "scrollable": false,
+                         "enabled": true, "checkable": false, "checked": false,
+                         "selected": false, "focused": false, "editable": false,
+                         "bounds": [left, top, right, bottom], "children": [...]}]}]}
 ```
 
-Compose test tags show up as `resourceId` when the app sets
-`testTagsAsResourceId`. `label` is the node's text, else its content
-description, else its descendants' labels: Compose puts a clickable
-row's text on its children. A state is reported once two consecutive
-dumps agree (at most four dumps).
+Window types are `application`, `inputMethod`, `system` and
+`accessibilityOverlay`. Compose test tags show up as `resourceId` when
+the app sets `testTagsAsResourceId`. `label` is the node's text, else its
+content description, else its descendants' labels: Compose puts a
+clickable row's text on its children.
 
-Actions select nodes by any of `resourceId`, `text`, `desc`, `label` and
-`class`, plus `index` among the matches in depth-first order:
+A node's `id` hashes its window's type and package, the nearest ancestor
+with a resource id, its own resource id, class and label, and the label
+of its nearest clickable ancestor (so the identical "Follow" buttons of
+different rows differ). It doesn't depend on position or on what else is
+on screen, so the same node has the same id after scrolling, in another
+session, and in replayed or shrunk traces. Nodes that still look alike
+get `-1`, `-2`, ... in depth-first order.
+
+A state is reported once two trees in a row agree, each fetched after
+200ms without accessibility events. Quiet alone isn't enough, because
+Compose doesn't send events for most changes.
+
+### Actions
+
+Actions address nodes by `node` id or, for convenience, by any of
+`resourceId`, `text`, `desc`, `label` and `class`, plus `index` among the
+matches in depth-first order. Other keys are ignored, so specifications
+can add a `label` to make traces readable:
 
 ```json
-{"Tap": {"label": "Interests"}}              {"Tap": {"x": 540, "y": 1200}}
+{"Tap": {"node": "5c1f3a0e", "label": "Interests"}}   {"Tap": {"x": 540, "y": 1200}}
 {"LongPress": {"resourceId": "card", "index": 2}}
 {"TypeText": {"text": "hello", "into": {"resourceId": "searchTextField"}}}
-{"Scroll": {"direction": "down", "percent": 60}}   (largest scrollable node, or add a selector)
+{"Scroll": {"node": "9e0b11c2", "direction": "down"}}
+{"Scroll": {"direction": "down", "percent": 60}}
 {"Swipe": {"from": [100, 1500], "to": [100, 500]}}
 "Back"   "Home"   "Enter"
 ```
 
-A selector that matches nothing is skipped (logged to stderr), so
-replayed and shrunk traces don't fail on nodes that aren't there.
+`Tap`, `LongPress` and `Scroll` perform the node's accessibility action
+(click, long click, scroll up/down/left/right or forward/backward) and
+fall back to injected touches at the node's centre. `TypeText` appends to
+the focused field (or the `into` node) with the set-text action. `Scroll`
+without a node scrolls the app's largest scrollable node. With `percent`,
+it drags that share of the node instead. Drags and swipes plan every
+event's time and hold still before lifting, so they don't fling and
+always scroll the same distance. `Back` and `Home` are global actions.
+
+An action on a node that isn't there is skipped (logged to stderr), so
+replayed and shrunk traces don't fail on nodes that are gone.
 
 The driver picks the first device in `BOMBADIL_ANDROID_SERIALS`
 (comma-separated, default `ANDROID_SERIAL`, then `emulator-5554`) that no
 other driver process on the host holds, so `--parallelism N` works with
 N devices. With fewer devices than workers, the extra drivers fail with
-"all devices are in use".
+"all devices are in use". `BOMBADIL_ANDROID_TIMINGS=<file>` makes the
+driver append each step's timings to a file, one JSON line per step.
 
 ## Experiment: Now in Android
 
