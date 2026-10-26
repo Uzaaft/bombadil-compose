@@ -108,6 +108,23 @@ While the app's own windows are in front, the agent:
   apps that never go idle, such as an endless animation, and 300ms
   without focus means something outside the app is in front.
 
+The agent also keeps tests inside the app, the way Espresso-Intents
+stubs intents: a blocking `ActivityMonitor`, asked about every
+`startActivity` before it happens, refuses those that would leave the
+app (an explicit intent to another package, or an implicit one that
+nothing in the app handles, such as a link for the browser or a share
+sheet) with a cancelled result, so the other app never launches. The
+app's own activities and permission requests (a system dialog that
+belongs to the app's flow) go through. Each state lists the hand-offs
+blocked during the action that produced it in `blockedIntents`:
+`[{action, data, package}]`, `package` being where it would have gone,
+or null when the app can't see that (Android 11's package visibility
+hides the browser from apps that don't declare it).
+`--allow-external-activities` (`NIA_ALLOW_EXTERNAL=1` in the experiment)
+turns this off. The agent's state also includes the keyboard, as an
+`inputMethod` window without nodes, when it's shown over the app (API 30
+and later), as the helper's does: Back closes it before anything else.
+
 Whatever leaves the app's windows goes to the helper. If an action makes
 the app start an activity (an `ActivityMonitor` counts every
 `startActivity`) or finish one, the helper waits until the task stack's
@@ -292,11 +309,15 @@ $B external test --specification $S/spec.ts --time-limit 3m -- $S/driver.sh
 $B external fuzz --specification $S/spec.ts --time-limit-fuzz 3m --time-limit-run 30s -- $S/driver.sh
 ```
 
-`spec.ts` checks that the app stays in front (articles open in the
-browser, which counts), never shows a crash or ANR dialog, shows the
+`spec.ts` checks that the app stays in front (the agent blocks the
+browser an article would open in), that the only hand-offs it attempts
+are web links and that tapping a news card attempts one, that it never
+shows a crash or ANR dialog, shows the
 whole bottom navigation on top-level screens (within 2 seconds, since
 states are best effort), and leaves a topic's
-screen on Back. It taps visible clickable nodes, scrolls, types into the
+screen on Back (unless the keyboard is up). The system's permission
+dialog counts as in the app: the driver grants notifications, but without
+`--grant` the app asks, and the agent lets that request through. It taps visible clickable nodes, scrolls, types into the
 focused search field, and presses Back except where Back would close the
 app.
 
@@ -310,31 +331,39 @@ $B external test --specification $S/follow.spec.ts --exit-on-violation --output-
 $B external shrink --specification $S/follow.spec.ts --trace /tmp/follow -- $S/driver.sh
 ```
 
-A step (action to state) takes about 78ms (median; p90 0.22s) with the
-agent on a GPU emulator and the benchmarkRelease build, from a 3-minute
-test: 1645 states, or 9.1 per second. 3-minute tests, states per second
-(step median, p90):
+A step (action to state) takes about 70ms (median; p90 82ms) with the
+agent blocking hand-offs, on a GPU emulator with the benchmarkRelease
+build: a 3-minute test made 2656 states, or 14.8 per second, all of them
+in the app. Each emulator then uses about 0.8 host cores. 98% of steps
+stay inside the agent: the action takes about 1ms, the app is idle about
+60ms later (Compose's Recomposer has work for a number of 60Hz frames
+after a tap, however fast each frame renders), and the tree takes 1ms to
+build. Before the agent blocked hand-offs, a tenth of the states were in
+the browser an article opened in: 9.1 states per second, with the
+browser (loading real pages) using half of the emulator's CPU and each
+emulator about 2.4 host cores. Earlier 3-minute tests, letting the
+browser open, states per second (step median, p90):
 
 | | demoDebug | demoBenchmarkRelease |
 |---|---|---|
 | SwiftShader | 5.8 (105ms, 488ms) | 6.7 (86ms, 471ms) |
 | GPU (RTX 5090) | 8.2 (82ms, 223ms) | 9.1 (78ms, 219ms) |
 
-80% of steps stay inside the app: the action takes about 1ms, the app is
-idle about 70ms later, and the tree takes 1ms to build (4–5ms in the
-debug build). Neither the GPU nor the release build shortens that wait:
-it's Compose's Recomposer having work for about 70ms after a tap on all
-four (its animations run for a number of 60Hz frames, however fast each
-frame renders), so it's bound by the display's clock, not by rendering.
-The release build halves background work after a tap (11ms against
-23ms). What the GPU shortens is the rest: opening an
-article in the browser waits about 210ms for it to appear (480ms on
-SwiftShader), and Back out of it about 110ms. In fuzzing, two GPU
-emulators make 15.8 states per second together and four 24.6; the GPU
-stays under 35% busy, and the host's CPUs become the limit. States that
-are still changing (a tree read again a second later differs) are
-under 1% with every combination. A session takes about 3.6 seconds to
-start, with or without the agent.
+Fuzzing scales with emulators until the host's CPUs run out (3 minutes
+each, `--time-limit-run 30s`):
+
+| Emulators | States/s total | Per worker | Host CPU busy (median, p90) | GPU busy (median) |
+|---|---|---|---|---|
+| 4 | 57 | 14.3 | 15%, 28% | 8% |
+| 8 | 105 | 13.1 | 35%, 64% | 20% |
+| 12 | 127 | 10.6 | 74%, 97% | 29% |
+
+Each emulator takes 0.9 to 1.2 host cores while fuzzing, 4GB of guest
+RAM and 0.6GB of GPU memory. States that are still changing (a tree
+read again a second later differs) were under 1% with every combination
+measured. A session takes about 3.6 seconds to start, with or without
+the agent.
+
 Without the agent (`NIA_NO_AGENT=1`), steps take 0.17 seconds (4.3 states
 per second): the first frame reaches the screen about 50ms after the
 action and the helper waits for a 33ms pause in frames, then builds the
