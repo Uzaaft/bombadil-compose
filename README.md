@@ -26,7 +26,7 @@ bombadil external test --specification examples/counter.spec.ts -- build/install
 
 `me.uzaaft.bombadil.android.AdbAppDriver` drives an installed Android
 app (Compose or not) from the host through `adb`, and
-`bin/bombadil-android --package <id> [--apk <file>] [--grant <permission>]...`
+`bin/bombadil-android --package <id> [--apk <file>] [--agent <apk>] [--grant <permission>]...`
 runs it as a Bombadil driver. Each session installs the APK (if given),
 clears the app's data, grants the permissions, disables animations and
 launches the app.
@@ -56,6 +56,71 @@ the driver reinstalls the helper when a new key makes the update fail.
 While the helper runs, nothing else on the device can use UiAutomation
 (`uiautomator dump`, Espresso or other UI tests): Android allows one
 connection at a time.
+
+### The in-process agent
+
+With `--agent <apk>`, the driver also runs an agent inside the app's
+process, the way Espresso and Compose's UI tests do: `android-agent/` is
+an instrumentation whose target is the app, so Android loads it into the
+app's process and class loader, and only if it carries the app's
+signature. `gradle agentDex` compiles it (Kotlin, against `android.jar`
+and the Compose version the app ships) into a dex with only its own
+classes, since the app provides Compose and the Kotlin standard library;
+`android-agent/package.sh <dex dir> <app package> <keystore> <apk>`
+packages and signs it for one app (for debug builds, with
+`~/.android/debug.keystore`). Each session starts the agent with
+`am instrument`, which starts the app's process with the agent in it,
+before the app is launched, so the agent sees every Compose root the app
+creates (`ViewRootForTest.onViewCreatedCallback`).
+
+While the app's own windows are in front, the agent:
+
+- reads them directly on the main thread: Compose semantics trees and
+  plain Views, in the helper's JSON shape, with ids hashed the same way.
+  It follows Compose's accessibility layer, so that states look the same
+  as through the helper: unmerged nodes with touch bounds; no unplaced,
+  transparent or hidden nodes, nor nodes covered by important nodes in
+  front (a screen still composed behind the one on top); test tags as
+  resource ids only under `testTagsAsResourceId`; and no windows behind a
+  modal one (a dialog). On Now in Android's screens the agent's nodes,
+  bounds and flags match the helper's exactly. It takes 5ms instead of
+  25ms, and no frame has to reach the screen first.
+- acts with semantics actions (`OnClick`, `ScrollBy`, `SetText`, ...) or
+  View methods, falling back to touches injected into the app's own
+  windows. Back is a key event the app has handled by the time the
+  agent replies. A node in a window covered by another of the app's
+  windows (under a dialog) gets a real touch instead, which the window
+  in front receives, as it would from a user.
+- reports the state once the main thread has nothing left to do, from
+  Compose's and Android's own signals, as Compose's UI tests decide
+  idleness: no snapshot changes waiting to be applied, no `Recomposer`
+  with pending work (recompositions, or animations waiting for a frame),
+  no Compose root with a pending measure or layout, no message due in the
+  main looper's queue (which includes pending View traversals), no work
+  in the coroutine scheduler behind the IO and Default dispatchers (tasks
+  queued or running, read from its description) and no running Room
+  worker: most responses to input reach the main thread through them
+  (ViewModel, repository, database, flow). The app's front window must
+  also have input focus, which moves a frame or two after a dialog opens
+  or closes. Each check runs on the main thread; while the app is busy,
+  the next one runs when the queue goes idle or, for work done in frames,
+  after the next frame. No sleeps. One cap (2s, `settled: false`) covers
+  apps that never go idle, such as an endless animation, and 300ms
+  without focus means something outside the app is in front.
+
+Whatever leaves the app's windows goes to the helper. If an action makes
+the app start an activity (an `ActivityMonitor` counts every
+`startActivity`) or finish one, the helper waits until the task stack's
+top activity has changed and its window is shown and quiet, and then the
+agent takes over again if the new activity is the app's. Home, actions in
+other apps (the browser), and states where something outside the app
+has input focus (a system dialog: the agent waits up to 300ms for focus
+to come back to the app after one of its own dialogs closes) use the
+helper alone. If the app dies, the session goes on with the helper.
+
+Settling is still best effort, as in Bombadil's browser driver: work the
+agent doesn't see (a delayed coroutine, an image being decoded) shows up
+in a later state.
 
 ### State
 
@@ -127,11 +192,12 @@ session is the exception: it waits until two trees in a row agree, so
 that every session starts from the same state.
 
 What best effort costs, measured by fetching the tree again a second
-after each state: about 3% of states inside Now in Android had changed
-(a dialog or the search screen still drawing), and most states right
-after an article opened in the browser had, because the page was still
-loading. Waiting only for the first frame after an action left 21% of
-states changed.
+after each state: in 3-minute tests about 10% of states had changed, both
+with the agent (9.4%) and without (9.8%), most of them right after an
+article opened in the browser, whose page was still loading, and a few
+dialogs still loading their content. Waiting only for the first frame
+after an action left 21% of states changed, and the agent without its
+background-worker check 30%.
 
 ### Actions
 
@@ -221,12 +287,18 @@ $B external test --specification $S/follow.spec.ts --exit-on-violation --output-
 $B external shrink --specification $S/follow.spec.ts --trace /tmp/follow -- $S/driver.sh
 ```
 
-A step (action to state) takes about 0.22 seconds (median; p90 0.49s).
-The app presents its first frame about 50ms after the action; the wait
-ends after a 50ms pause (250ms after Back and Home), about 160ms after
-the action in all; building the tree takes about 40ms on the device, and
-moving it to the host about 1ms. A session takes about 3.5 seconds to
-start. That's from a 3-minute test: 607 states, or 3.4 per second,
-against 1.5 per second when waiting for quiet periods and 0.22 per second
-with `uiautomator dump`. Bombadil's default `--time-limit-run` of 10s allows
-about 20 actions per fuzz run, so raise it for longer runs.
+A step (action to state) takes about 0.12 seconds (median; p90 0.32s)
+with the agent, from a 3-minute test: 1042 states, or 5.8 per second.
+84% of steps stay inside the app: the action takes about 2ms, the app
+is idle about 80ms later (Compose's Recomposer has work for about five
+frames after a tap; the queue, background workers and focus add a few
+milliseconds now and then), and the tree takes 5ms to build. Steps that
+open an article in the browser wait about 500ms for it to appear, and
+Back out of it about 130ms. A session takes about 3.6 seconds to start, with or without the agent.
+Without the agent (`NIA_NO_AGENT=1`), steps take 0.17 seconds (4.3 states
+per second): the first frame reaches the screen about 50ms after the
+action and the helper waits for a 33ms pause in frames, then builds the
+tree in about 25ms. Earlier versions managed 3.4 states per second with a
+fixed pause after Back, 1.5 when waiting for quiet periods and 0.22 with
+`uiautomator dump`. Bombadil's default `--time-limit-run` of 10s allows
+about 60 actions per fuzz run, so raise it for longer runs.
