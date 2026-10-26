@@ -238,11 +238,18 @@ driver append each step's timings to a file, one JSON line per step.
 ## Experiment: Now in Android
 
 `experiments/nowinandroid/` tests
-[Now in Android](https://github.com/android/nowinandroid)'s `demoDebug`
-build (local demo data, no backend), pinned to commit `2982e63c` in
-`env.sh`. Everything runs in the dev shell, which provides the Android
-SDK, platform 37, build tools, the emulator and an API 35 x86_64 image.
-The emulator needs KVM.
+[Now in Android](https://github.com/android/nowinandroid) with its demo
+data (no backend), pinned to commit `2982e63c` in `env.sh`. By default
+it builds the `demoBenchmarkRelease` variant: R8-minified and not
+debuggable like a release build, but signed with the debug key, so that
+the in-process agent can be signed to match. `NIA_VARIANT=debug` tests
+`demoDebug` instead. The agent is dexed without its dependencies and
+uses the app's Compose and Kotlin classes, so `agent-keep.pro` (added to
+the app's R8 rules through `agent-keep.init.gradle`, without touching
+the checkout) keeps the classes it uses under their own names; it costs
+the APK 130 KB (4.63 to 4.77 MB). Everything runs in the dev shell, which
+provides the Android SDK, platform 37, build tools, the emulator and an
+API 35 x86_64 image. The emulator needs KVM.
 
 ```sh
 nix develop
@@ -260,6 +267,22 @@ each session clears the app's data instead.
 (`--parallelism 3`), and `setup.sh stop` kills them. All instances run
 `-read-only` so they can share the AVD; an emulator of that AVD that you
 started without `-read-only` stops others from booting.
+
+The emulators render on the host's GPU when there is one (`NIA_GPU=auto`,
+the default; `NIA_GPU=swiftshader` forces software rendering and
+`NIA_GPU=host` the GPU). Headless, `emulator -gpu host` fails: its host
+renderer opens an X display through GLX ("Failed to open display"), and
+its launcher puts the bundled SwiftShader GL libraries first on
+`LD_LIBRARY_PATH`, so even with `ANDROID_EGL_ON_EGL=1` it renders on
+SwiftShader. `setup.sh` therefore starts the emulator's qemu binary
+directly, with `ANDROID_EGL_ON_EGL=1` (EGL needs no display) and a
+library path of the emulator's own libraries, libglvnd (`GLVND_LIB`, from
+the dev shell) and the host's drivers in `/run/opengl-driver` (NixOS;
+`NIA_GL_DRIVERS` overrides). libglvnd then picks NVIDIA's EGL, and the
+guest reports `GLES: ... (NVIDIA GeForce RTX 5090/PCIe/SSE2), OpenGL ES
+3.1` in `dumpsys SurfaceFlinger`; nvidia-smi lists the qemu processes. If
+the GPU emulator exits during boot, `setup.sh` boots it again with
+SwiftShader. A GPU boot takes about 14 seconds, against 19.
 
 ```sh
 B=bombadil   # a Bombadil build with `bombadil external`
@@ -287,14 +310,31 @@ $B external test --specification $S/follow.spec.ts --exit-on-violation --output-
 $B external shrink --specification $S/follow.spec.ts --trace /tmp/follow -- $S/driver.sh
 ```
 
-A step (action to state) takes about 0.12 seconds (median; p90 0.32s)
-with the agent, from a 3-minute test: 1042 states, or 5.8 per second.
-84% of steps stay inside the app: the action takes about 2ms, the app
-is idle about 80ms later (Compose's Recomposer has work for about five
-frames after a tap; the queue, background workers and focus add a few
-milliseconds now and then), and the tree takes 5ms to build. Steps that
-open an article in the browser wait about 500ms for it to appear, and
-Back out of it about 130ms. A session takes about 3.6 seconds to start, with or without the agent.
+A step (action to state) takes about 78ms (median; p90 0.22s) with the
+agent on a GPU emulator and the benchmarkRelease build, from a 3-minute
+test: 1645 states, or 9.1 per second. 3-minute tests, states per second
+(step median, p90):
+
+| | demoDebug | demoBenchmarkRelease |
+|---|---|---|
+| SwiftShader | 5.8 (105ms, 488ms) | 6.7 (86ms, 471ms) |
+| GPU (RTX 5090) | 8.2 (82ms, 223ms) | 9.1 (78ms, 219ms) |
+
+80% of steps stay inside the app: the action takes about 1ms, the app is
+idle about 70ms later, and the tree takes 1ms to build (4–5ms in the
+debug build). Neither the GPU nor the release build shortens that wait:
+it's Compose's Recomposer having work for about 70ms after a tap on all
+four (its animations run for a number of 60Hz frames, however fast each
+frame renders), so it's bound by the display's clock, not by rendering.
+The release build halves background work after a tap (11ms against
+23ms). What the GPU shortens is the rest: opening an
+article in the browser waits about 210ms for it to appear (480ms on
+SwiftShader), and Back out of it about 110ms. In fuzzing, two GPU
+emulators make 15.8 states per second together and four 24.6; the GPU
+stays under 35% busy, and the host's CPUs become the limit. States that
+are still changing (a tree read again a second later differs) are
+under 1% with every combination. A session takes about 3.6 seconds to
+start, with or without the agent.
 Without the agent (`NIA_NO_AGENT=1`), steps take 0.17 seconds (4.3 states
 per second): the first frame reaches the screen about 50ms after the
 action and the helper waits for a 33ms pause in frames, then builds the
