@@ -187,7 +187,8 @@ $B external fuzz --specification $S/spec.ts --time-limit-fuzz 3m --time-limit-ru
 
 `spec.ts` checks that the app stays in front (articles open in the
 browser, which counts), never shows a crash or ANR dialog, shows the
-whole bottom navigation on top-level screens, and leaves a topic's
+whole bottom navigation on top-level screens (within 2 seconds, since
+states are best effort), and leaves a topic's
 screen on Back. It taps visible clickable nodes, scrolls, types into the
 focused search field, and presses Back except where Back would close the
 app.
@@ -209,4 +210,4 @@ the host takes about 1ms. A session takes about 4 seconds to start.
 That's from a 3-minute test: 625 states, or 3.5 per second, against 1.5
 per second when waiting for quiet periods and 0.22 per second with
 `uiautomator dump`. Bombadil's default `--time-limit-run` of 10s allows
-about a dozen actions per fuzz run, so raise it for longer runs.
+about 20 actions per fuzz run, so raise it for longer runs.
