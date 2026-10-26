@@ -99,24 +99,32 @@ the app's windows and the keyboard (`UiAutomation.clearWindowContentFrameStats`)
 After the action it reports the tree once one of these has happened:
 
 - a frame: a watched window has presented a frame after the action, and
-  neither a further frame nor an accessibility event followed for 50ms
-  (three refresh periods at 60Hz). Frames catch content changes that send
-  no accessibility events, which is most of Compose's. After Back and
-  Home the pause must last 250ms: they can finish an activity, whose
-  window presents a last frame well before the window change is
-  announced. Without this, Back out of the browser was reported as still
-  in the browser, and the spec's next Back left the app.
-- a window change: an activity, dialog or keyboard came or went, and
-  accessibility events then paused for 50ms with some window active.
+  neither a further frame nor an accessibility event followed for 33ms
+  (two refresh periods at 60Hz). Frames catch content changes that send
+  no accessibility events, which is most of Compose's. One refresh
+  period, "the next frame after the last one", is too short on the
+  emulator: Compose's frames after a tap come 10-150ms apart, and 16% of
+  states were caught mid-transition, against 10% with two periods.
+- an activity change: the top activity of the task stack (read with the
+  shell's permissions) differs from the one before the action, and once
+  a window of its package is active, events and frames paused for 33ms.
+  The task stack changes within milliseconds of an activity starting or
+  finishing, while the window change is announced up to 200ms later.
+- a window change: a dialog or keyboard came or went, and accessibility
+  events then paused for 33ms with some window active.
 
 Accessibility events wake the wait up; between them the helper polls the
-frame statistics once per refresh period. The remaining timeouts are
-fallbacks, not the mechanism. After 500ms with no frame and no window
-change, the action changed nothing visible, and the tree is reported as
-it is. A window change that never goes quiet is reported after 1s, and
-an endless animation after 2s. The first state of a session is the
-exception: it waits until two trees in a row agree, so that every session
-starts from the same state.
+frame statistics and the top activity once per refresh period. The
+remaining timeouts are fallbacks, not the mechanism. After 500ms with no
+frame, activity or window change, the action changed nothing visible,
+and the tree is reported as it is. A window change that never goes quiet
+is reported after 1s, and an endless animation after 2s. Back and Home in
+another app (the browser an article opens in) wait for a 250ms pause:
+WebView handles Back, presents a frame and finishes its activity some
+150ms later, with no signal in between, and reporting the browser still
+in front made the spec's next Back leave the app. The first state of a
+session is the exception: it waits until two trees in a row agree, so
+that every session starts from the same state.
 
 What best effort costs, measured by fetching the tree again a second
 after each state: about 3% of states inside Now in Android had changed
