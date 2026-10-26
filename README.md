@@ -87,9 +87,33 @@ on screen, so the same node has the same id after scrolling, in another
 session, and in replayed or shrunk traces. Nodes that still look alike
 get `-1`, `-2`, ... in depth-first order.
 
-A state is reported once two trees in a row agree, each fetched after
-200ms without accessibility events. Quiet alone isn't enough, because
-Compose doesn't send events for most changes.
+Settling after an action is best effort, as in Bombadil's browser
+driver: the driver waits for the app to respond, not for it to stop
+changing. If something is still animating, the next state shows the
+rest, and temporal properties (`eventually`, `next`) handle states in
+between. Before each action the helper clears the frame statistics of
+the app's windows and the keyboard (`UiAutomation.clearWindowContentFrameStats`).
+After the action it reports the tree once one of these has happened:
+
+- a frame: a watched window has presented a frame after the action, and
+  no further frame followed for 50ms (three refresh periods at 60Hz).
+  Frames catch content changes that send no accessibility events, which
+  is most of Compose's.
+- a window change: an activity, dialog or keyboard came or went, and
+  accessibility events then paused for 50ms with some window active.
+
+Accessibility events wake the wait up; between them the helper polls the
+frame statistics once per refresh period. The remaining timeouts are
+fallbacks, not the mechanism. After 200ms with no frame and no window
+change, the action changed nothing visible, and the tree is reported as
+it is. A window change that never goes quiet is reported after 1s, and
+an endless animation after 2s. The first state of a session is the
+exception: it waits until two trees in a row agree, so that every session
+starts from the same state.
+
+About 4 to 5% of reported states differ in the app's windows from a tree
+fetched again a second later, typically a list still scrolling or a
+screen still loading.
 
 ### Actions
 
@@ -178,10 +202,11 @@ $B external test --specification $S/follow.spec.ts --exit-on-violation --output-
 $B external shrink --specification $S/follow.spec.ts --trace /tmp/follow -- $S/driver.sh
 ```
 
-A step (action to state) takes about 0.5 seconds (median; p90 0.9s),
-mostly the two 200ms quiet periods of settling. Fetching a tree takes
-about 30ms on the device, and moving it to the host takes about 1ms.
-A session takes about 3 seconds to start. That's from a 3-minute test:
-275 states, or 1.5 per second, against 0.22 per second with
+A step (action to state) takes about 0.22 seconds (median; p90 0.47s):
+about 50ms until the app presents its first frame, 50ms to see that no
+more follow, and about 45ms to build the tree on the device. Moving it to
+the host takes about 1ms. A session takes about 4 seconds to start.
+That's from a 3-minute test: 625 states, or 3.5 per second, against 1.5
+per second when waiting for quiet periods and 0.22 per second with
 `uiautomator dump`. Bombadil's default `--time-limit-run` of 10s allows
 about a dozen actions per fuzz run, so raise it for longer runs.
