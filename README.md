@@ -96,15 +96,19 @@ the app's windows and the keyboard (`UiAutomation.clearWindowContentFrameStats`)
 After the action it reports the tree once one of these has happened:
 
 - a frame: a watched window has presented a frame after the action, and
-  no further frame followed for 50ms (three refresh periods at 60Hz).
-  Frames catch content changes that send no accessibility events, which
-  is most of Compose's.
+  neither a further frame nor an accessibility event followed for 50ms
+  (three refresh periods at 60Hz). Frames catch content changes that send
+  no accessibility events, which is most of Compose's. After Back and
+  Home the pause must last 250ms: they can finish an activity, whose
+  window presents a last frame well before the window change is
+  announced. Without this, Back out of the browser was reported as still
+  in the browser, and the spec's next Back left the app.
 - a window change: an activity, dialog or keyboard came or went, and
   accessibility events then paused for 50ms with some window active.
 
 Accessibility events wake the wait up; between them the helper polls the
 frame statistics once per refresh period. The remaining timeouts are
-fallbacks, not the mechanism. After 200ms with no frame and no window
+fallbacks, not the mechanism. After 500ms with no frame and no window
 change, the action changed nothing visible, and the tree is reported as
 it is. A window change that never goes quiet is reported after 1s, and
 an endless animation after 2s. The first state of a session is the
