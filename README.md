@@ -115,9 +115,12 @@ an endless animation after 2s. The first state of a session is the
 exception: it waits until two trees in a row agree, so that every session
 starts from the same state.
 
-About 4 to 5% of reported states differ in the app's windows from a tree
-fetched again a second later, typically a list still scrolling or a
-screen still loading.
+What best effort costs, measured by fetching the tree again a second
+after each state: about 3% of states inside Now in Android had changed
+(a dialog or the search screen still drawing), and most states right
+after an article opened in the browser had, because the page was still
+loading. Waiting only for the first frame after an action left 21% of
+states changed.
 
 ### Actions
 
@@ -207,11 +210,12 @@ $B external test --specification $S/follow.spec.ts --exit-on-violation --output-
 $B external shrink --specification $S/follow.spec.ts --trace /tmp/follow -- $S/driver.sh
 ```
 
-A step (action to state) takes about 0.22 seconds (median; p90 0.47s):
-about 50ms until the app presents its first frame, 50ms to see that no
-more follow, and about 45ms to build the tree on the device. Moving it to
-the host takes about 1ms. A session takes about 4 seconds to start.
-That's from a 3-minute test: 625 states, or 3.5 per second, against 1.5
-per second when waiting for quiet periods and 0.22 per second with
-`uiautomator dump`. Bombadil's default `--time-limit-run` of 10s allows
+A step (action to state) takes about 0.22 seconds (median; p90 0.49s).
+The app presents its first frame about 50ms after the action; the wait
+ends after a 50ms pause (250ms after Back and Home), about 160ms after
+the action in all; building the tree takes about 40ms on the device, and
+moving it to the host about 1ms. A session takes about 3.5 seconds to
+start. That's from a 3-minute test: 607 states, or 3.4 per second,
+against 1.5 per second when waiting for quiet periods and 0.22 per second
+with `uiautomator dump`. Bombadil's default `--time-limit-run` of 10s allows
 about 20 actions per fuzz run, so raise it for longer runs.
