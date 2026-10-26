@@ -34,7 +34,7 @@ launches the app.
 ### The on-device helper
 
 The driver reads the UI and acts through a small instrumentation APK,
-`android-helper/` (plain Java against `android.jar`, about 20 KB). The
+`android-helper/` (Kotlin against `android.jar`, about 25 KB). The
 driver carries it as a resource, installs it on each device the first
 time, and starts it with `adb shell am instrument -w`. The helper keeps
 one `UiAutomation` connection open, sees every interactive window
@@ -44,11 +44,14 @@ which the driver reaches through `adb forward`. It outlives sessions:
 later sessions reuse it as long as it runs the same APK. `AndroidHelper`
 documents its commands.
 
-Gradle builds the APK without the Android Gradle plugin: `compileHelper`
-compiles the Java, and `android-helper/build.sh` runs `d8`, `aapt2`,
-`zipalign` and `apksigner` from the dev shell's SDK. The signing key is
-generated per build directory, and the driver reinstalls the helper when
-a new key makes the update fail.
+Gradle builds the APK without the Android Gradle plugin: the `helper`
+source set compiles the Kotlin against `android.jar` (with `-no-jdk`, so
+only Android's Java library is visible), and `android-helper/build.sh`
+runs R8, `aapt2`, `zipalign` and `apksigner` from the dev shell's SDK.
+R8 keeps only the parts of the Kotlin standard library the helper uses
+(`android-helper/rules.pro`); dexing the whole library with `d8` would
+add about 2 MB. The signing key is generated per build directory, and
+the driver reinstalls the helper when a new key makes the update fail.
 
 While the helper runs, nothing else on the device can use UiAutomation
 (`uiautomator dump`, Espresso or other UI tests): Android allows one
