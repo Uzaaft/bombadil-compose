@@ -139,6 +139,69 @@ Settling is still best effort, as in Bombadil's browser driver: work the
 agent doesn't see (a delayed coroutine, an image being decoded) shows up
 in a later state.
 
+#### Virtual frame clock (opt-in)
+
+By default the app runs in real time: after an action, the agent waits
+for the 60 Hz frames the app asks for. In Now in Android most of a
+step's ~65ms goes there, on frames the app spends little time in: a
+navigation transition or a colour animation moves on one frame per
+vsync even with animations scaled to 0. `--virtual-frame-clock`
+(`NIA_VIRTUAL_CLOCK=1` in the experiment) runs those frames on a
+virtual clock instead, as Compose's UI tests do with `MainTestClock`
+and `autoAdvance = false`:
+
+- Before the app creates a window, the agent installs a
+  `WindowRecomposerPolicy` factory, so that every window `Recomposer` gets
+  the agent's frame clock (`VirtualFrameClock`). Outside steps it passes
+  frames through from vsync.
+- While the agent settles after an action, the `Recomposer`'s frame
+  requests wait for the agent. The agent runs a frame as soon as nothing
+  else is left: messages due in the main queue have run, background work
+  is idle, and only frame requests remain. A virtual frame does what a
+  Choreographer frame does for Compose, as compose-ui-test's
+  `TestMonotonicFrameClock` does with `onPerformTraversals`: animations
+  and recomposition at a frame time one display interval later, then
+  measure and layout of the Compose roots. Frame time stays monotonic
+  across virtual and real frames.
+- Once Compose is idle, the agent waits for one real frame, as
+  `waitForIdle` ends with the next Choreographer frame. That frame draws,
+  lays out plain Views, applies insets, attaches new windows and moves
+  focus, which may give Compose more to do.
+- Plain-View screens (the licences screen) aren't on the clock: they
+  settle as before, on a frame without drawing.
+- A step stops being virtual after 120 virtual frames (an endless
+  animation; then the 2s cap applies, `settled: false`). It also stops
+  when the action leaves the activity, and leftover frame requests then
+  go back to vsync.
+
+The keyboard needs one more signal. With the real clock, a step lasts
+long enough for the keyboard to arrive or leave. With the virtual clock,
+a step can end while the keyboard is still on its way: it has already
+taken over Back for the window (the IME registers its back callback as
+soon as the app asks for the keyboard), but the window's insets don't
+show it yet. The next Back then goes to the keyboard, though the state
+shows none. So in this mode, a step also isn't settled while the
+window's Back owner and the IME insets disagree (fallback: 500ms, for a
+keyboard that never arrives). Reading the Back owner uses a hidden API,
+so in this mode the agent is started with `am instrument
+--no-hidden-api-checks`.
+
+The trade-off is fidelity. The app's animations run in virtual time: a
+200ms transition takes a handful of back-to-back frames, and what the
+app sees as elapsed time between frames is not what passed on the wall
+clock. Code that races real time against frames (a `delay` next to an
+animation, a timeout shorter than a transition) can behave differently
+than it would for a user. Use the default for that kind of bug, and the
+virtual clock for throughput.
+
+On a GPU emulator with the benchmarkRelease build, 3-minute tests ran at
+23.8 to 24.7 states per second (step median 30ms, p90 50 to 62ms),
+against 15.6 (65ms, 82ms) for the default run back to back. A step runs
+about 3.6 virtual frames and waits for 1.8 real ones. In both modes,
+0.6% of states have app windows that differ when the tree is read again
+a second later. Fuzzing with 4 emulators made 90 states per second (57
+by default).
+
 ### State
 
 The state is the focused window and the pruned accessibility tree of
